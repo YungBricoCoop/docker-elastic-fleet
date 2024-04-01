@@ -1,0 +1,249 @@
+version: "3.8"
+name: elastic_fleet
+
+services:
+    setup:
+        container_name: ef_setup
+        image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+        volumes:
+            - ./certs_setup.sh:/usr/local/bin/certs_setup.sh:ro
+            - ef_certs:/usr/share/elasticsearch/config/certs
+        user: "0"
+        command: /bin/bash -c "certs_setup.sh"
+        environment:
+            ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+            KIBANA_PASSWORD: ${KIBANA_PASSWORD}
+        healthcheck:
+            test:
+                [
+                    "CMD-SHELL",
+                    "[ -f config/certs/elastic-search/elastic-search.crt ]",
+                ]
+            interval: 1s
+            timeout: 5s
+            retries: 120
+
+    elastic-search:
+        depends_on:
+            setup:
+                condition: service_healthy
+        image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+        container_name: ef_elastic_search
+        labels:
+            co.elastic.logs/module: elasticsearch
+        volumes:
+            - ef_certs:/usr/share/elasticsearch/config/certs
+            - elastic_search_data:/usr/share/elasticsearch/data
+            - ./get_ca_certs_info.sh:/usr/local/bin/get_ca_certs_info.sh:ro
+        environment:
+            node.name: elastic-search
+            cluster.name: ${CLUSTER_NAME}
+            discovery.type: single-node
+            ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+            bootstrap.memory_lock: true
+            xpack.security.enabled: true
+            xpack.security.http.ssl.enabled: true
+            xpack.security.http.ssl.key: certs/elastic-search/elastic-search.key
+            xpack.security.http.ssl.certificate: certs/elastic-search/elastic-search.crt
+            xpack.security.http.ssl.certificate_authorities: certs/ca/ca.crt
+            xpack.security.transport.ssl.enabled: true
+            xpack.security.transport.ssl.key: certs/elastic-search/elastic-search.key
+            xpack.security.transport.ssl.certificate: certs/elastic-search/elastic-search.crt
+            xpack.security.transport.ssl.certificate_authorities: certs/ca/ca.crt
+            xpack.security.transport.ssl.verification_mode: certificate
+            xpack.license.self_generated.type: ${LICENSE}
+        mem_limit: ${ES_MEM_LIMIT}
+        ulimits:
+            memlock:
+                soft: -1
+                hard: -1
+        healthcheck:
+            test:
+                [
+                    "CMD-SHELL",
+                    "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+                ]
+            interval: 10s
+            timeout: 10s
+            retries: 120
+        networks:
+            - default
+            - nginx
+
+    kibana:
+        depends_on:
+            elastic-search:
+                condition: service_healthy
+        image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+        container_name: ef_kibana
+        labels:
+            co.elastic.logs/module: kibana
+        volumes:
+            - ef_certs:/usr/share/kibana/config/certs
+            - kibana_data:/usr/share/kibana/data
+            - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+        ports:
+            - "127.0.0.1:5601:5601"
+        environment:
+            SERVERNAME: kibana
+            ELASTICSEARCH_HOSTS: https://elastic-search:9200
+            ELASTICSEARCH_USERNAME: kibana_system
+            ELASTICSEARCH_PASSWORD: ${KIBANA_PASSWORD}
+            ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES: config/certs/ca/ca.crt
+            XPACK_SECURITY_ENCRYPTIONKEY: ${ENCRYPTION_KEY}
+            XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${ENCRYPTION_KEY}
+            XPACK_REPORTING_ENCRYPTIONKEY: ${ENCRYPTION_KEY}
+            XPACK_REPORTING_KIBANASERVER_HOSTNAME: localhost
+            SERVER_SSL_ENABLED: true
+            SERVER_SSL_CERTIFICATE: config/certs/kibana/kibana.crt
+            SERVER_SSL_KEY: config/certs/kibana/kibana.key
+            SERVER_SSL_CERTIFICATEAUTHORITIES: config/certs/ca/ca.crt
+        mem_limit: ${KB_MEM_LIMIT}
+        healthcheck:
+            test:
+                [
+                    "CMD-SHELL",
+                    "curl -I -s --cacert config/certs/ca/ca.crt https://localhost:5601 | grep -q 'HTTP/1.1 302 Found'",
+                ]
+            interval: 10s
+            timeout: 10s
+            retries: 120
+
+    metricbeat:
+        depends_on:
+            elastic-search:
+                condition: service_healthy
+            kibana:
+                condition: service_healthy
+        image: docker.elastic.co/beats/metricbeat:${STACK_VERSION}
+        container_name: ef_metricbeat
+        user: root
+        volumes:
+            - ef_certs:/usr/share/metricbeat/certs
+            - metricbeat_data:/usr/share/metricbeat/data
+            - "./metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro"
+            - "/var/run/docker.sock:/var/run/docker.sock:ro"
+            - "/sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro"
+            - "/proc:/hostfs/proc:ro"
+            - "/:/hostfs:ro"
+        environment:
+            ELASTIC_USER: elastic
+            ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+            ELASTIC_HOSTS: https://elastic-search:9200
+            KIBANA_HOSTS: https://kibana:5601
+            LOGSTASH_HOSTS: http://logstash01:9600
+            CA_CERT: certs/ca/ca.crt
+            ES_CERT: certs/elastic-search/elastic-search.crt
+            ES_KEY: certs/elastic-search/elastic-search.key
+            KB_CERT: certs/kibana/kibana.crt
+            KB_KEY: certs/kibana/kibana.key
+        command: -strict.perms=false
+
+    filebeat:
+        depends_on:
+            elastic-search:
+                condition: service_healthy
+        image: docker.elastic.co/beats/filebeat:${STACK_VERSION}
+        container_name: ef_filebeat
+        user: root
+        volumes:
+            - ef_certs:/usr/share/filebeat/certs
+            - filebeat_data:/usr/share/filebeat/data
+            - "./filebeat_ingest_data/:/usr/share/filebeat/ingest_data/"
+            - "./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro"
+            - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+            - "/var/run/docker.sock:/var/run/docker.sock:ro"
+        environment:
+            ELASTIC_USER: elastic
+            ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+            ELASTIC_HOSTS: https://elastic-search:9200
+            KIBANA_HOSTS: https://kibana:5601
+            LOGSTASH_HOSTS: http://logstash01:9600
+            CA_CERT: certs/ca/ca.crt
+        command: -strict.perms=false
+
+    logstash:
+        depends_on:
+            elastic-search:
+                condition: service_healthy
+            kibana:
+                condition: service_healthy
+        image: docker.elastic.co/logstash/logstash:${STACK_VERSION}
+        container_name: ef_logstash
+        labels:
+            co.elastic.logs/module: logstash
+        user: root
+        mem_limit: ${LS_MEM_LIMIT}
+        volumes:
+            - ef_certs:/usr/share/logstash/certs
+            - logstash_data:/usr/share/logstash/data
+            - "./logstash_ingest_data/:/usr/share/logstash/ingest_data/"
+            - "./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro"
+        environment:
+            xpack.monitoring.enabled: false
+            ELASTIC_USER: elastic
+            ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+            ELASTIC_HOSTS: https://elastic-search:9200
+
+    fleet-server:
+        depends_on:
+            kibana:
+                condition: service_healthy
+            elastic-search:
+                condition: service_healthy
+        image: docker.elastic.co/beats/elastic-agent-complete:${STACK_VERSION}
+        container_name: ef_fleet_server
+        volumes:
+            - ef_certs:/certs
+            - fleetserver_data:/usr/share/elastic-agent
+            - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+            - "/var/run/docker.sock:/var/run/docker.sock:ro"
+            - "/sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro"
+            - "/proc:/hostfs/proc:ro"
+            - "/:/hostfs:ro"
+        user: root
+        environment:
+            SSL_CERTIFICATE_AUTHORITIES: /certs/ca/ca.crt
+            CERTIFICATE_AUTHORITIES: /certs/ca/ca.crt
+            FLEET_CA: /certs/ca/ca.crt
+            FLEET_ENROLL: 1
+            FLEET_SERVER_ELASTICSEARCH_CA: /certs/ca/ca.crt
+            FLEET_SERVER_ELASTICSEARCH_HOST: https://elastic-search:9200
+            FLEET_SERVER_ENABLE: 1
+            FLEET_SERVER_CERT: /certs/fleet-server/fleet-server.crt
+            FLEET_SERVER_CERT_KEY: /certs/fleet-server/fleet-server.key
+            FLEET_SERVER_POLICY_ID: fleet-server-policy
+            FLEET_URL: https://fleet-server:8220
+            FLEET_SERVER_SERVICE_TOKEN: ${FLEET_SERVER_SERVICE_TOKEN}
+            KIBANA_FLEET_CA: /certs/ca/ca.crt
+            KIBANA_FLEET_SETUP: 1
+            KIBANA_FLEET_USERNAME: elastic
+            KIBANA_FLEET_PASSWORD: ${ELASTIC_PASSWORD}
+            KIBANA_HOST: https://kibana:5601
+        networks:
+            - default
+            - nginx
+
+volumes:
+    ef_certs:
+        external: true
+    elastic_search_data:
+        driver: local
+    kibana_data:
+        driver: local
+    metricbeat_data:
+        driver: local
+    filebeat_data:
+        driver: local
+    logstash_data:
+        driver: local
+    fleetserver_data:
+        driver: local
+
+networks:
+    default:
+        name: ef_network
+        external: true
+    nginx:
+        name: nginx
+        external: true
