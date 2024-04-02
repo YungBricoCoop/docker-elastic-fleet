@@ -1,8 +1,15 @@
 filebeat.inputs:
   - type: filestream
-    id: default-filestream
+    id: syslog-stream
     paths:
-      - ingest_data/*.log
+      - /var/log/syslog
+      - /var/log/auth.log
+      - /var/log/fail2ban.log
+    processors:
+      - add_fields:
+          target: event
+          fields:
+            dataset: "syslog"
 
 filebeat.autodiscover:
   providers:

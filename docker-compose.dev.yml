@@ -1,5 +1,5 @@
 version: "3.8"
-name: prod_elastic_fleet
+name: dev_elastic_fleet
 
 services:
     setup:
@@ -36,6 +36,8 @@ services:
             - ef_certs:/usr/share/elasticsearch/config/certs
             - elastic_search_data:/usr/share/elasticsearch/data
             - ./get_ca_certs_info.sh:/usr/local/bin/get_ca_certs_info.sh:ro
+        ports:
+            - "9200:9200"
         environment:
             node.name: elastic-search
             cluster.name: ${CLUSTER_NAME}
@@ -69,7 +71,6 @@ services:
             retries: 120
         networks:
             - default
-            - nginx
 
     kibana:
         depends_on:
@@ -85,7 +86,7 @@ services:
             - kibana_data:/usr/share/kibana/data
             - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
         ports:
-            - "127.0.0.1:5601:5601"
+            - "5601:5601"
         environment:
             SERVERNAME: kibana
             ELASTICSEARCH_HOSTS: https://elastic-search:9200
@@ -207,6 +208,8 @@ services:
             - "/sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro"
             - "/proc:/hostfs/proc:ro"
             - "/:/hostfs:ro"
+        ports:
+            - "8220:8220"
         user: root
         environment:
             SSL_CERTIFICATE_AUTHORITIES: /certs/ca/ca.crt
@@ -228,7 +231,6 @@ services:
             KIBANA_HOST: https://kibana:5601
         networks:
             - default
-            - nginx
 
 volumes:
     ef_certs:
@@ -249,7 +251,4 @@ volumes:
 networks:
     default:
         name: ef_network
-        external: true
-    nginx:
-        name: nginx
         external: true
